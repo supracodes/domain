@@ -2,12 +2,11 @@
 
 namespace App\Commands;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\Cookie\CookieJar;
-use GuzzleHttp\RequestOptions;
+use App\Domain;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use LaravelZero\Framework\Commands\Command;
+use Spatie\Fork\Fork;
 use function Termwind\render;
 
 class CheckCommand extends Command
@@ -31,59 +30,39 @@ class CheckCommand extends Command
      */
     public function handle(): void
     {
+        $size = 50;
         $lists = $this->getList();
-        $chunks = $lists->chunk(10);
-
-        $cookieJar = new CookieJar();
-        $client = new Client([
-            RequestOptions::VERIFY => false,
-            RequestOptions::HTTP_ERRORS => false,
-            RequestOptions::COOKIES => $cookieJar,
-        ]);
-
-        $http = Http::setClient($client);
-
-        $http->get('https://99webtools.com/page-authority-domain-authority-checker.php');
+        $chunks = $lists->chunk($size);
 
         foreach ($chunks as $chunk) {
-            $response = $http->asForm()->post('https://99webtools.com/inc/pada.php', [
-                'site' => (string) collect($chunk)->join(PHP_EOL),
-            ]);
+            $tasks = collect($chunk)
+                ->filter(fn ($domain) => Domain::query()->where([
+                    'host' => strtoupper($domain),
+                ])->exists())
+                ->map(fn ($domain) => function () use ($domain) {
+                    $response = Http::seoMetrics()->get('/search', [
+                        'url' => $domain,
+                    ]);
 
-            $json = $response->json();
+                    if ($response->failed()) {
+                        dump($response->body());
+                    }
 
-            if (! $json) {
-                foreach ($chunk as $domain) {
-                    render('<div class="text-red-500">'.$domain.' Failed.</div>');
-                }
+                    $attrs = collect($response->json())
+                        ->only(['host', 'mozRank', 'backlinks', 'DA', 'PA', 'TF'])
+                        ->merge(['host' => $domain]);
 
-                $this->write('errors.txt', (string) collect($chunk)->join(PHP_EOL));
+                    Domain::query()->updateOrCreate(['host' => $domain], $attrs->all());
 
-                continue;
-            }
+                    render("<div>{$attrs->get('host')}  {$attrs->get('DA')}</div>");
+                });
 
-            foreach ($json as $result) {
-                $result = collect($result);
-                $domain = str($result->get('uu'))->replace(['/'], '');
-                $domainAuthority = $result->get('pda');
-                $domainPageAuthority = $result->get('upa');
+            Fork::new()
+                ->concurrent($size / 2)
+                ->run(...$tasks->all());
 
-                render(<<<HTML
-                    <div>
-                        <span class="text-green-500 w-40">
-                            {$domain}
-                        </span>
-                        <span class="text-yellow-500 w-10">
-                            {$domainAuthority}
-                        </span>
-                        <span class="text-purple-500 w-10">
-                            {$domainPageAuthority}
-                        </span>
-                    </div>
-                HTML);
-
-                $this->write('results.txt', $domain.'|'.$domainAuthority.'|'.$domainPageAuthority);
-            }
+            $this->info('Waiting for 50 seconds...');
+            sleep(2);
         }
     }
 

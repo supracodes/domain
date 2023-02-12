@@ -3,4 +3,7 @@
 /.vscode
 /.vagrant
 .phpunit.result.cache
+/*.txt/database/database.sqlite
+.env
 /*.txt
+ray.php
